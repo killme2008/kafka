@@ -72,14 +72,21 @@ object ApiVersion {
     "0.11.0" -> KAFKA_0_11_0_IV2,
     // Introduced LeaderAndIsrRequest V1, UpdateMetadataRequest V4 and FetchRequest V6 via KIP-112
     "1.0-IV0" -> KAFKA_1_0_IV0,
-    "1.0" -> KAFKA_1_0_IV0
+    "1.0" -> KAFKA_1_0_IV0,
+    // Introduced DeleteGroupsRequest V0 via KIP-229, plus KIP-227 incremental fetch requests,
+    // and KafkaStorageException for fetch requests.
+    "1.1-IV0" -> KAFKA_1_1_IV0,
+    "1.1" -> KAFKA_1_1_IV0
   )
 
   private val versionPattern = "\\.".r
 
-  def apply(version: String): ApiVersion =
-    versionNameMap.getOrElse(versionPattern.split(version).slice(0, 3).mkString("."),
-      throw new IllegalArgumentException(s"Version `$version` is not a valid version"))
+  def apply(version: String): ApiVersion = {
+    val versionsSeq = versionPattern.split(version)
+    val numSegments = if (version.startsWith("0.")) 3 else 2
+    val key = versionsSeq.take(numSegments).mkString(".")
+    versionNameMap.getOrElse(key, throw new IllegalArgumentException(s"Version `$version` is not a valid version"))
+  }
 
   def latestVersion = versionNameMap.values.max
 
@@ -181,3 +188,8 @@ case object KAFKA_1_0_IV0 extends ApiVersion {
   val id: Int = 13
 }
 
+case object KAFKA_1_1_IV0 extends ApiVersion {
+  val version: String = "1.1-IV0"
+  val messageFormatVersion: Byte = RecordBatch.MAGIC_VALUE_V2
+  val id: Int = 14
+}

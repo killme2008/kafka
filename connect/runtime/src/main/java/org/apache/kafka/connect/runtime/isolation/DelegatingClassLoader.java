@@ -18,6 +18,7 @@ package org.apache.kafka.connect.runtime.isolation;
 
 import org.apache.kafka.connect.connector.Connector;
 import org.apache.kafka.connect.storage.Converter;
+import org.apache.kafka.connect.storage.HeaderConverter;
 import org.apache.kafka.connect.transforms.Transformation;
 import org.reflections.Reflections;
 import org.reflections.util.ClasspathHelper;
@@ -52,11 +53,13 @@ import java.util.TreeSet;
 
 public class DelegatingClassLoader extends URLClassLoader {
     private static final Logger log = LoggerFactory.getLogger(DelegatingClassLoader.class);
+    private static final String CLASSPATH_NAME = "classpath";
 
     private final Map<String, SortedMap<PluginDesc<?>, ClassLoader>> pluginLoaders;
     private final Map<String, String> aliases;
     private final SortedSet<PluginDesc<Connector>> connectors;
     private final SortedSet<PluginDesc<Converter>> converters;
+    private final SortedSet<PluginDesc<HeaderConverter>> headerConverters;
     private final SortedSet<PluginDesc<Transformation>> transformations;
     private final List<String> pluginPaths;
     private final Map<Path, PluginClassLoader> activePaths;
@@ -69,6 +72,7 @@ public class DelegatingClassLoader extends URLClassLoader {
         this.activePaths = new HashMap<>();
         this.connectors = new TreeSet<>();
         this.converters = new TreeSet<>();
+        this.headerConverters = new TreeSet<>();
         this.transformations = new TreeSet<>();
     }
 
@@ -82,6 +86,10 @@ public class DelegatingClassLoader extends URLClassLoader {
 
     public Set<PluginDesc<Converter>> converters() {
         return converters;
+    }
+
+    public Set<PluginDesc<HeaderConverter>> headerConverters() {
+        return headerConverters;
     }
 
     public Set<PluginDesc<Transformation>> transformations() {
@@ -139,10 +147,23 @@ public class DelegatingClassLoader extends URLClassLoader {
     }
 
     protected void initLoaders() {
-        String path = null;
+        for (String configPath : pluginPaths) {
+            initPluginLoader(configPath);
+        }
+        // Finally add parent/system loader.
+        initPluginLoader(CLASSPATH_NAME);
+        addAllAliases();
+    }
+
+    private void initPluginLoader(String path) {
         try {
-            for (String configPath : pluginPaths) {
-                path = configPath;
+            if (CLASSPATH_NAME.equals(path)) {
+                scanUrlsAndAddPlugins(
+                        getParent(),
+                        ClasspathHelper.forJavaClassPath().toArray(new URL[0]),
+                        null
+                );
+            } else {
                 Path pluginPath = Paths.get(path).toAbsolutePath();
                 // Update for exception handling
                 path = pluginPath.toString();
@@ -156,14 +177,6 @@ public class DelegatingClassLoader extends URLClassLoader {
                     registerPlugin(pluginPath);
                 }
             }
-
-            path = "classpath";
-            // Finally add parent/system loader.
-            scanUrlsAndAddPlugins(
-                    getParent(),
-                    ClasspathHelper.forJavaClassPath().toArray(new URL[0]),
-                    null
-            );
         } catch (InvalidPathException | MalformedURLException e) {
             log.error("Invalid path in plugin path: {}. Ignoring.", path, e);
         } catch (IOException e) {
@@ -171,7 +184,6 @@ public class DelegatingClassLoader extends URLClassLoader {
         } catch (InstantiationException | IllegalAccessException e) {
             log.error("Could not instantiate plugins in: {}. Ignoring: {}", path, e);
         }
-        addAllAliases();
     }
 
     private void registerPlugin(Path pluginLocation)
@@ -209,6 +221,8 @@ public class DelegatingClassLoader extends URLClassLoader {
             connectors.addAll(plugins.connectors());
             addPlugins(plugins.converters(), loader);
             converters.addAll(plugins.converters());
+            addPlugins(plugins.headerConverters(), loader);
+            headerConverters.addAll(plugins.headerConverters());
             addPlugins(plugins.transformations(), loader);
             transformations.addAll(plugins.transformations());
         }
@@ -260,6 +274,7 @@ public class DelegatingClassLoader extends URLClassLoader {
         return new PluginScanResult(
                 getPluginDesc(reflections, Connector.class, loader),
                 getPluginDesc(reflections, Converter.class, loader),
+                getPluginDesc(reflections, HeaderConverter.class, loader),
                 getPluginDesc(reflections, Transformation.class, loader)
         );
     }
@@ -314,6 +329,7 @@ public class DelegatingClassLoader extends URLClassLoader {
     private void addAllAliases() {
         addAliases(connectors);
         addAliases(converters);
+        addAliases(headerConverters);
         addAliases(transformations);
     }
 

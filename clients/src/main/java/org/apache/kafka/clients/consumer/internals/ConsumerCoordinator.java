@@ -295,6 +295,8 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 ensureActiveGroup();
                 now = time.milliseconds();
             }
+
+            pollHeartbeat(now);
         } else {
             // For manually assigned partitions, if there are no ready nodes, await metadata.
             // If connections to all nodes fail, wakeups triggered while attempting to send fetch
@@ -311,12 +313,11 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             }
         }
 
-        pollHeartbeat(now);
         maybeAutoCommitOffsetsAsync(now);
     }
 
     /**
-     * Return the time to the next needed invocation of {@link #poll(long)}.
+     * Return the time to the next needed invocation of {@link #poll(long, long)}.
      * @param now current time in milliseconds
      * @return the maximum time in milliseconds the caller should wait before the next invocation of poll()
      */
@@ -527,13 +528,14 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 public void onSuccess(Void value) {
                     pendingAsyncCommits.decrementAndGet();
                     doCommitOffsetsAsync(offsets, callback);
+                    client.pollNoWakeup();
                 }
 
                 @Override
                 public void onFailure(RuntimeException e) {
                     pendingAsyncCommits.decrementAndGet();
                     completedOffsetCommits.add(new OffsetCommitCompletion(callback, offsets,
-                            RetriableCommitFailedException.withUnderlyingMessage(e.getMessage())));
+                            new RetriableCommitFailedException(e)));
                 }
             });
         }
@@ -562,7 +564,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                 Exception commitException = e;
 
                 if (e instanceof RetriableException)
-                    commitException = RetriableCommitFailedException.withUnderlyingMessage(e.getMessage());
+                    commitException = new RetriableCommitFailedException(e);
 
                 completedOffsetCommits.add(new OffsetCommitCompletion(cb, offsets, commitException));
             }
@@ -622,20 +624,10 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         return false;
     }
 
-    private void maybeAutoCommitOffsetsAsync(long now) {
-        if (autoCommitEnabled) {
-            if (coordinatorUnknown()) {
-                this.nextAutoCommitDeadline = now + retryBackoffMs;
-            } else if (now >= nextAutoCommitDeadline) {
-                this.nextAutoCommitDeadline = now + autoCommitIntervalMs;
-                doAutoCommitOffsetsAsync();
-            }
-        }
-    }
-
-    public void maybeAutoCommitOffsetsNow() {
-        if (autoCommitEnabled && !coordinatorUnknown())
+    public void maybeAutoCommitOffsetsAsync(long now) {
+        if (autoCommitEnabled && now >= nextAutoCommitDeadline) {
             doAutoCommitOffsetsAsync();
+        }
     }
 
     private void doAutoCommitOffsetsAsync() {
@@ -649,8 +641,11 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     log.warn("Asynchronous auto-commit of offsets {} failed: {}", offsets, exception.getMessage());
                     if (exception instanceof RetriableException)
                         nextAutoCommitDeadline = Math.min(time.milliseconds() + retryBackoffMs, nextAutoCommitDeadline);
+                    else
+                        nextAutoCommitDeadline = time.milliseconds() + autoCommitIntervalMs;
                 } else {
                     log.debug("Completed asynchronous auto-commit of offsets {}", offsets);
+                    nextAutoCommitDeadline = time.milliseconds() + autoCommitIntervalMs;
                 }
             }
         });
